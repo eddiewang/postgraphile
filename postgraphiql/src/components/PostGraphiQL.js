@@ -311,7 +311,7 @@ class PostGraphiQL extends React.PureComponent {
         },
         extraHeaders,
       ),
-      credentials: 'same-origin',
+      credentials: 'include',
       body: JSON.stringify(graphQLParams),
     });
 
