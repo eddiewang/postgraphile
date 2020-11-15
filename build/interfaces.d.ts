@@ -62,6 +62,7 @@ export interface PostGraphileOptions<Request extends IncomingMessage = IncomingM
     graphiqlRoute?: string;
     externalUrlBase?: string;
     graphiql?: boolean;
+    graphiqlCredentials?: 'include' | 'omit' | 'same-origin';
     enhanceGraphiql?: boolean;
     enableCors?: boolean;
     bodySizeLimit?: string;
