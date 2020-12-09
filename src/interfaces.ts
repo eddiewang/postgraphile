@@ -69,13 +69,17 @@ export interface PostGraphileOptions<
   ownerConnectionString?: string;
   // Enable GraphQL websocket transport support for subscriptions (you still need a subscriptions plugin currently)
   subscriptions?: boolean;
+  // Choose which websocket transport libraries to use. Use commas to define multiple. Defaults to '[v0, v1]' if `--subscriptions` was passed, '[]' otherwise
+  websockets?: ('v0' | 'v1')[];
+  // Toggle which GraphQL websocket transport operations are supported: 'subscriptions' or 'all'. Defaults to `subscriptions`
+  websocketOperations?: 'all' | 'subscriptions';
   // [EXPERIMENTAL] Enables live-query support via GraphQL subscriptions (sends updated payload any time nested collections/records change)
   live?: boolean;
   // [EXPERIMENTAL] If you're using websockets (subscriptions || live) then you
   // may want to authenticate your users using sessions or similar. You can
   // pass some simple middlewares here that will be executed against the
   // websocket connection in order to perform authentication. We current only
-  // support express (not Koa) middlewares here.
+  // support Express (not Koa, Fastify, Restify, etc) middlewares here.
   /* @middlewareOnly */
   websocketMiddlewares?: Array<Middleware<Request, Response>>;
   // The default Postgres role to use. If no role was provided in a provided
@@ -234,6 +238,7 @@ export interface PostGraphileOptions<
   // the `Authorization` header, and signing JWT tokens you return in
   // procedures.
   jwtSecret?: jwt.Secret;
+  // The public key to verify the JWT when signed with RS265 or ES256 algorithms.
   jwtPublicKey?: jwt.Secret | jwt.GetPublicKeyOrSecret;
   // Options with which to perform JWT verification - see
   // https://github.com/auth0/node-jsonwebtoken#jwtverifytoken-secretorpublickey-options-callback

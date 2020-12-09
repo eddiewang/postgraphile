@@ -17,7 +17,6 @@ import { pluginHookFromOptions } from '../pluginHook';
 import { HttpRequestHandler, mixed, CreateRequestHandlerOptions } from '../../interfaces';
 import setupServerSentEvents from './setupServerSentEvents';
 import withPostGraphileContext from '../withPostGraphileContext';
-import { Context as KoaContext } from 'koa';
 import LRU from '@graphile/lru';
 
 import chalk from 'chalk';
@@ -52,9 +51,10 @@ import favicon from '../../assets/favicon.ico';
  * will use a regular expression to replace some variables.
  */
 import baseGraphiqlHtml from '../../assets/graphiql.html';
-import { enhanceHttpServerWithSubscriptions } from './subscriptions';
+import { enhanceHttpServerWithWebSockets } from './subscriptions';
 import {
-  KoaNext,
+  CompatKoaContext,
+  CompatKoaNext,
   PostGraphileResponse,
   PostGraphileResponseKoa,
   PostGraphileResponseNode,
@@ -172,6 +172,7 @@ export default function createPostGraphileHttpRequestHandler(
   options: CreateRequestHandlerOptions,
 ): HttpRequestHandler {
   const MEGABYTE = 1024 * 1024;
+  const subscriptions = !!options.subscriptions;
   const {
     getGqlSchema,
     pgPool,
@@ -183,8 +184,8 @@ export default function createPostGraphileHttpRequestHandler(
     watchPg,
     disableQueryLog,
     enableQueryBatching,
+    websockets = subscriptions ? ['v0', 'v1'] : [],
   } = options;
-  const subscriptions = !!options.subscriptions;
   const live = !!options.live;
   const enhanceGraphiql =
     options.enhanceGraphiql === false ? false : !!options.enhanceGraphiql || subscriptions || live;
@@ -200,6 +201,18 @@ export default function createPostGraphileHttpRequestHandler(
   let externalUrlBase = options.externalUrlBase;
   if (externalUrlBase && externalUrlBase.endsWith('/')) {
     throw new Error('externalUrlBase must not end with a slash (`/`)');
+  }
+
+  // Validate websockets argument
+  if (
+    // must be array
+    !Array.isArray(websockets) ||
+    // empty array = 'none'
+    (websockets.length &&
+      // array can only hold the versions
+      websockets.some(ver => !['v0', 'v1'].includes(ver)))
+  ) {
+    throw new Error(`Invalid value for \`websockets\` option: '${websockets}'`);
   }
 
   const pluginHook = pluginHookFromOptions(options);
@@ -425,7 +438,8 @@ export default function createPostGraphileHttpRequestHandler(
               ? externalEventStreamRoute || `${externalUrlBase}${eventStreamRoute}`
               : null,
             enhanceGraphiql,
-            subscriptions,
+            // if 'v1' websockets are included, use the v1 client always
+            websockets: !websockets.length ? 'none' : websockets.includes('v1') ? 'v1' : 'v0',
             allowExplain:
               typeof options.allowExplain === 'function'
                 ? ALLOW_EXPLAIN_PLACEHOLDER
@@ -435,17 +449,19 @@ export default function createPostGraphileHttpRequestHandler(
         )
       : null;
 
-    if (subscriptions) {
+    if (websockets.length) {
       const server = req && req.connection && req.connection['server'];
       if (!server) {
         // tslint:disable-next-line no-console
         console.warn(
-          "Failed to find server to add websocket listener to, you'll need to call `enhanceHttpServerWithSubscriptions` manually",
+          "Failed to find server to add websocket listener to, you'll need to call `enhanceHttpServerWithWebSockets` manually",
         );
       } else {
         // Relying on this means that a normal request must come in before an
         // upgrade attempt. It's better to call it manually.
-        enhanceHttpServerWithSubscriptions(server, middleware, { graphqlRoute: graphqlRouteForWs });
+        enhanceHttpServerWithWebSockets(server, middleware, {
+          graphqlRoute: graphqlRouteForWs,
+        });
       }
     }
   };
@@ -580,7 +596,20 @@ export default function createPostGraphileHttpRequestHandler(
     'eventStreamRouteHandler',
     async function eventStreamRouteHandler(res: PostGraphileResponse) {
       try {
-        const req = res.getNodeServerRequest();
+        // You can use this hook either to modify the incoming request or to tell
+        // PostGraphile not to handle the request further (return null). NOTE: if
+        // you return `null` from this hook then you are also responsible for
+        // terminating the request however your framework handles that (e.g.
+        // `res.send(...)` or `next()`).
+        const req = pluginHook(
+          'postgraphile:http:eventStreamRouteHandler',
+          res.getNodeServerRequest(),
+          { options, response: res },
+        );
+        if (req == null) {
+          return;
+        }
+
         // Add our CORS headers to be good web citizens (there are perf
         // implications though so be careful!)
         //
@@ -606,7 +635,19 @@ export default function createPostGraphileHttpRequestHandler(
   const faviconRouteHandler = neverReject('faviconRouteHandler', async function faviconRouteHandler(
     res: PostGraphileResponse,
   ) {
-    const req = res.getNodeServerRequest();
+    // You can use this hook either to modify the incoming request or to tell
+    // PostGraphile not to handle the request further (return null). NOTE: if
+    // you return `null` from this hook then you are also responsible for
+    // terminating the request however your framework handles that (e.g.
+    // `res.send(...)` or `next()`).
+    const req = pluginHook('postgraphile:http:faviconRouteHandler', res.getNodeServerRequest(), {
+      options,
+      response: res,
+    });
+    if (req == null) {
+      return;
+    }
+
     // If this is the wrong method, we should let the client know.
     if (!(req.method === 'GET' || req.method === 'HEAD')) {
       res.statusCode = req.method === 'OPTIONS' ? 200 : 405;
@@ -632,7 +673,19 @@ export default function createPostGraphileHttpRequestHandler(
   const graphiqlRouteHandler = neverReject(
     'graphiqlRouteHandler',
     async function graphiqlRouteHandler(res: PostGraphileResponse) {
-      const req = res.getNodeServerRequest();
+      // You can use this hook either to modify the incoming request or to tell
+      // PostGraphile not to handle the request further (return null). NOTE: if
+      // you return `null` from this hook then you are also responsible for
+      // terminating the request however your framework handles that (e.g.
+      // `res.send(...)` or `next()`).
+      const req = pluginHook('postgraphile:http:graphiqlRouteHandler', res.getNodeServerRequest(), {
+        options,
+        response: res,
+      });
+      if (req == null) {
+        return;
+      }
+
       if (firstRequestHandler) firstRequestHandler(req);
 
       // If using the incorrect method, let the user know.
@@ -671,7 +724,19 @@ export default function createPostGraphileHttpRequestHandler(
   const graphqlRouteHandler = neverReject('graphqlRouteHandler', async function graphqlRouteHandler(
     res: PostGraphileResponse,
   ) {
-    const req = res.getNodeServerRequest();
+    // You can use this hook either to modify the incoming request or to tell
+    // PostGraphile not to handle the request further (return null). NOTE: if
+    // you return `null` from this hook then you are also responsible for
+    // terminating the request however your framework handles that (e.g.
+    // `res.send(...)` or `next()`).
+    const req = pluginHook('postgraphile:http:graphqlRouteHandler', res.getNodeServerRequest(), {
+      options,
+      response: res,
+    });
+    if (req == null) {
+      return;
+    }
+
     if (firstRequestHandler) firstRequestHandler(req);
 
     // Add our CORS headers to be good web citizens (there are perf
@@ -1017,8 +1082,8 @@ export default function createPostGraphileHttpRequestHandler(
     // `koa` middleware.
     if (isKoaApp(a, b)) {
       // Set the correct `koa` variable names…
-      const ctx = a as KoaContext;
-      const next = b as KoaNext;
+      const ctx = a as CompatKoaContext;
+      const next = b as CompatKoaNext;
       const responseHandler = new PostGraphileResponseKoa(ctx, next);
 
       // Execute our request handler. If an error is thrown, we don’t call
